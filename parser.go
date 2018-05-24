@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io/ioutil"
@@ -52,18 +53,18 @@ type iosPlist struct {
 func NewAppParser(name string) (*AppInfo, error) {
 	file, err := os.Open(name)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed opening file: %v: %v", name, err)
 	}
 	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed getting file stat: %v", err)
 	}
 
 	reader, err := zip.NewReader(file, stat.Size())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed reading zip file: %v", err)
 	}
 
 	var xmlFile, plistFile, iosIconFile *zip.File
@@ -91,7 +92,13 @@ func NewAppParser(name string) (*AppInfo, error) {
 
 	if ext == iosExt {
 		info, err := parseIpaFile(plistFile)
+		if err != nil {
+			return nil, err
+		}
 		icon, err := parseIpaIcon(iosIconFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed parsing ipa icon file: %v", err)
+		}
 		info.Icon = icon
 		info.Size = stat.Size()
 		return info, err
@@ -169,19 +176,19 @@ func parseIpaFile(plistFile *zip.File) (*AppInfo, error) {
 
 	rc, err := plistFile.Open()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed opening plist file: %v", err)
 	}
 	defer rc.Close()
 
 	buf, err := ioutil.ReadAll(rc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed reading plist data: %v", err)
 	}
 
 	p := new(iosPlist)
 	decoder := plist.NewDecoder(bytes.NewReader(buf))
 	if err := decoder.Decode(p); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed decoding plist data: %v", err)
 	}
 
 	info := new(AppInfo)
@@ -198,18 +205,31 @@ func parseIpaFile(plistFile *zip.File) (*AppInfo, error) {
 }
 
 func parseIpaIcon(iconFile *zip.File) (image.Image, error) {
+
 	if iconFile == nil {
 		return nil, errors.New("Icon is not found")
 	}
 
 	rc, err := iconFile.Open()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed opening icon file: %v", err)
 	}
 	defer rc.Close()
 
 	var w bytes.Buffer
-	iospng.PngRevertOptimization(rc, &w)
-
-	return png.Decode(bytes.NewReader(w.Bytes()))
+	err = iospng.PngRevertOptimization(rc, &w)
+	// BUG(@bzon): can't read sample ipa built from
+	// from https://github.com/browserstack/xcuitest-sample-browserstack
+	if err == iospng.ErrImageData {
+		image, _ := png.Decode(bytes.NewReader(w.Bytes()))
+		return image, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed png revert optimization: %v", err)
+	}
+	image, err := png.Decode(bytes.NewReader(w.Bytes()))
+	if err != nil {
+		return nil, fmt.Errorf("failed decoding png: %v", err)
+	}
+	return image, nil
 }
